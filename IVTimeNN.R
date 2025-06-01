@@ -1,0 +1,396 @@
+####################################################################################################################
+####################################################################################################################
+#------------------------------------ Settings ---------------------------------------------------------------------
+####################################################################################################################
+####################################################################################################################
+### Parameters
+T <- 1/12
+S <- 0
+nsteps <- 10000
+dt <- T / nsteps
+Daily <- seq(1, T * 360) / 360  ### Daily steps
+
+### Initial Values
+theta0 <- theta_theta
+xi0 <- theta_theta
+s0 <- 0.003
+r0 <- 0.03
+
+### Jump
+jump <- 0/360#10/360
+jump_ <- 0/360#9/360
+
+####################################################################################################################
+####################################################################################################################
+#--------------------------------- 1M SOFR Futures Price -----------------------------------------------------------
+####################################################################################################################
+####################################################################################################################
+### Expectation and Futures Price
+SOFRSpot_Normal <- function(S, t, T, jump, jump_, thetat, xit, rt, st, intS_t){
+  if (t < jump){
+    1/(T - S) * ((T - t) * rt +                                                       ### Constant Rate Contribution
+                   1 / kappa_s_jump * (1 - exp(-kappa_s_jump * (T - t))) * st +       ### SOFR Spread Contribution
+                   theta_s_jump /kappa_s_jump * (exp(-kappa_s_jump * (T - t)) - 1) +  ### SOFR Spread Contribution
+                   theta_s_jump * (T - t) +                                           ### SOFR Spread Contribution
+                   1/2 * (T - t)^2 * nu_P * mu_P +                                    ### Unscheduled Jumps Contribution
+                   min(T - t, T - jump) * MeanXi(t, jump_, thetat, xit) +             ### Scheduled Jumps Contribution
+                   intS_t)                                                            ### Integral from S to t
+  } else if (t >= jump) {
+    1/(T - S) * ((T - t) * rt +                                                       ### Constant Rate Contribution
+                   1 / kappa_s_jump * (1 - exp(-kappa_s_jump * (T - t))) * st +       ### SOFR Spread Contribution
+                   theta_s_jump /kappa_s_jump * (exp(-kappa_s_jump * (T - t)) - 1) +  ### SOFR Spread Contribution
+                   theta_s_jump * (T - t) +                                           ### SOFR Spread Contribution
+                   1/2 * (T - t)^2 * nu_P * mu_P +                                    ### Unscheduled Jumps Contribution
+                   intS_t)                                                            ### Integral from S to t
+    #1/(T - S) * (#(T - S) * r[(t*360) + 1] +
+    #  theta_s_jump * (T - S) + 
+    #    (exp(-kappa_s_jump * (S - t)) - exp(-kappa_s_jump * (T - t)))/kappa_s_jump * 
+    #    (s - theta_s_jump))
+  }      
+}
+
+### Strike
+K_Normal <- 100 * (1 - SOFRSpot_Normal(S = 0, t = 0, T = T, jump = jump, jump_ = jump_, thetat = theta0, xit = xi0, rt = r0, st = s0, intS_t = 0))
+k_Normal <- (T - S) * (100 - K_Normal) / 100
+
+
+
+####################################################################################################################
+####################################################################################################################
+#------------------------------------- q_hat Function --------------------------------------------------------------
+####################################################################################################################
+####################################################################################################################
+### Exact solution for beta_q
+beta_q <- function(tau, x){
+  (1 + x)/kappa_s_jump * (exp(-kappa_s_jump * tau) - 1)
+}
+
+### Exact solution for alpha_q
+alpha_q <- function(tau, x){
+  (1 + x) * theta_s_jump/kappa_s_jump * (1 - exp(-kappa_s_jump * tau)) -
+    theta_s_jump * (1 + x) * tau +
+    (sigma_s_jump^2 * (1 + x)^2)/(2 * kappa_s_jump^2) * tau +
+    (sigma_s_jump^2 * (1 + x)^2)/(4 * kappa_s_jump^3) * (1 - exp(-2 * kappa_s_jump * tau)) -
+    (sigma_s_jump^2 * (1 + x)^2)/(kappa_s_jump^3) * (1 - exp(-kappa_s_jump * tau))
+}
+
+
+### Scaling
+h <- 1.3
+
+q_hat_Normal <- function(w, S, t, T, jump, jump_, K, ZCB, thetat, xit, rt, st, intS_t){ 
+  x <- h + complex(real = 0, imaginary = 1) * w
+  
+  #------------------ Strike Exponential -----------------------------------------------------------------------
+  k <- (T - S)/100 * (100 - K)
+  
+  #k_hat <- k - trapz(seq(S, t, by = 1/360), SOFRSampleWeekend$SOFR[((S*360) + 1):((t*360) + 1)])
+  #k_hat <- k - sum((head(SOFRSampleWeekend$SOFR[((S*360) + 1):((t*360) + 1)], -1) + tail(SOFRSampleWeekend$SOFR[((S*360) + 1):((t*360) + 1)], -1)) / 2 * (1/360)) ### Riemann Approxomation by mid-point rule
+  k_hat <- k - intS_t
+  
+  ### Compute Strike Term
+  StrikeTerm <- exp(x * k_hat)
+  
+  #------------------ ZCB Price -----------------------------------------------------------------------
+  ### ODE system for alpha_J
+  #func_J <- function(alpha_J, tau){
+  #  nu_P * (exp(-mu_P * tau + (sigma_P * tau)^2/2) - 1)
+  #}
+  
+  ### Solve for alpha_J(tau) using runge.kutta
+  #taus <- seq(0, T - t, length.out = 100)  # Integration grid up to tau
+  #alpha_J_RK <- runge.kutta(f = func_J, initial = 0, x = taus)
+  
+  ### Extract the final value of alpha_q
+  #alpha_J_val <- tail(alpha_J_RK, 1)             ### w/ Unscheduled Jumps
+  #alpha_J_val <- 0                               ### w/ No Unscheduled Jumps
+  
+  ### Compute ZCB price
+  #ZCB <- exp(-(T - t) * rt + alpha_J_val + alpha_s(T - t) + beta_s(T - t) * st)
+  
+  #------------------ First Term -----------------------------------------------------------------------
+  ### Compute First Term
+  FirstTerm <- exp(-(T - t) * (1 + x) * rt)
+  #FirstTerm <- 1
+  
+  #------------------ First Expectation -----------------------------------------------------------------------
+  ### Compute First Expectation
+  if (t < jump){
+    #FirstExpectation <- exp(
+    #  ((T - jump1) * (1 + x))^2/2 * omega^2 -
+    #    (T - jump1) * (1 + x) * t(Gamma_Q) %*% MeanX(t, jump1_) +
+    #    ((T - jump1) * (1 + x))^2/2 * t(Gamma_Q) %*% VarX(t, jump1_) %*% Gamma_Q
+    #)
+    FirstExpectation <- exp(
+      (-(T - jump) * (1 + x))^2/2 * omega^2 -
+        (T - jump) * (1 + x) * MeanXi(t, jump_, thetat, xit) +
+        (-(T - jump) * (1 + x))^2/2 * t(Gamma_Q) %*% VarX(t, jump_) %*% Gamma_Q
+    )
+  } else if (t >= jump) {
+    FirstExpectation <- 1                               ### w/ No Scheduled Jumps
+  }
+  
+  #------------------ Second Expectation -----------------------------------------------------------------------
+  ### Define func_q to compute alpha_q using the ODE
+  func_q <- function(tau, alpha_q) {
+    nu_P * (exp(mu_P * (- (1 + x) * tau) + (sigma_P * (- (1 + x) * tau))^2 / 2) - 1)
+  }
+  
+  ### Use a simple RK4 or your own integration routine (e.g., from pracma or deSolve)
+  taus <- seq(0, T - t, length.out = 100)
+  alpha_q_vals <- numeric(length(taus))
+  alpha_q_vals[1] <- 0                       ### Initial value
+  dtau <- taus[2] - taus[1]                  ### Time step difference
+  
+  for (i in 2:length(taus)) {
+    #k1 <- dtau * func_q(taus[i - 1], alpha_q_vals[i - 1])
+    #k2 <- dtau * func_q(taus[i - 1] + dtau/2, alpha_q_vals[i - 1] + k1 / 2)
+    #k3 <- dtau * func_q(taus[i - 1] + dtau/2, alpha_q_vals[i - 1] + k2 / 2)
+    #k4 <- dtau * func_q(taus[i - 1] + dtau, alpha_q_vals[i - 1] + k3)
+    #alpha_q_vals[i] <- alpha_q_vals[i - 1] + (k1 + 2*k2 + 2*k3 + k4) / 6
+    k1 <- func_q(taus[i - 1], alpha_q_vals[i - 1])
+    k2 <- func_q(taus[i - 1] + dtau/2, alpha_q_vals[i - 1] + dtau * k1 / 2)
+    k3 <- func_q(taus[i - 1] + dtau/2, alpha_q_vals[i - 1] + dtau * k2 / 2)
+    k4 <- func_q(taus[i - 1] + dtau, alpha_q_vals[i - 1] + dtau * k3)
+    alpha_q_vals[i] <- alpha_q_vals[i - 1] + (dtau / 6) * (k1 + 2*k2 + 2*k3 + k4)
+  }
+  
+  alpha_q_val <- tail(alpha_q_vals, 1)             ### w/ Unscheduled Jumps
+  #alpha_q_val <- 0                               ### w/ No Unscheduled Jumps
+  
+  ### Compute Second Expectation
+  SecondExpectation <- exp(alpha_q(T - t, x) + alpha_q_val + beta_q(T - t, x) * st)          ### Jump-part of alpha^q
+  
+  #------------------ Final Price -----------------------------------------------------------------------
+  ### Align dimensions
+  StrikeTerm <- as.vector(StrikeTerm)
+  #ZCB <- as.vector(ZCB)
+  FirstTerm <- as.vector(FirstTerm)
+  FirstExpectation <- as.vector(FirstExpectation)
+  SecondExpectation <- as.vector(SecondExpectation)
+  
+  return(StrikeTerm * 1/ZCB * FirstTerm * FirstExpectation * SecondExpectation)
+}
+
+
+####################################################################################################################
+####################################################################################################################
+#------------------------------------- Call Price Function ---------------------------------------------------------
+####################################################################################################################
+####################################################################################################################
+price1MSOFROption_Normal <- function(S, t, T, jump, jump_, K, ZCB, thetat, xit, rt, st, intS_t) { 
+  umax <- 50000
+  integrand_q_hat <- function(w) {
+    Re(q_hat_Normal(w, S = S, t = t, T = T, jump = jump, jump_ = jump_, K = K, ZCB = ZCB, thetat = thetat, xit = xit, rt = rt, st = st, intS_t = intS_t) / 
+         ((h + complex(real = 0, imaginary = 1) * w)^2))
+  }
+  
+  int <- (1 / pi) * integrate(integrand_q_hat, 0, umax)$value
+  #pi <- 100/(T - S) * ZCB_s(t = t, T = T, rt = rt, st = st) * int
+  pi <- 100/(T - S) * ZCB * int
+  
+  return(pi)
+}
+
+####################################################################################################################
+####################################################################################################################
+#---------------------------------- Implied Volatility -------------------------------------------------------------
+####################################################################################################################
+####################################################################################################################
+### Black-Scholes Pricing
+BlackScholesFormula <- function(spot, strike, t, T, r, div, D, sigma){
+  d1 = (1/(sigma * sqrt(T - t))) * (log(spot/strike) + (r + 0.5 * sigma^2) * (T - t))
+  d2 = d1 - sigma * sqrt(T - t)
+  pi_BS = D * (spot * exp(-div * T) * pnorm(d1) - exp(-r * (T - t)) * strike * pnorm(d2))
+  return(pi_BS)
+}
+
+### Implied Volatility
+IVTest <- function(spot, strike, t, T, D, c) {
+  Diff <- function(sigmaIV) BlackScholesFormula(spot, strike, t, T, r = 0, div = 0, D, sigmaIV) - c
+  
+  ### Handling boundary conditions
+  if (c >= D * spot) {
+    return(Inf)
+  } else if (c <= D * max(spot - strike, 0)) {
+    return(0)
+  } else {
+    ### Initial guess
+    sigmaIV <- 0.02
+    
+    ### Determine search bounds
+    if (Diff(sigmaIV) > 0) {
+      b <- sigmaIV
+      sigmaIV <- sigmaIV / 2
+      while (Diff(sigmaIV) > 0) {
+        sigmaIV <- sigmaIV / 2
+      }
+      a <- 0.99 * sigmaIV
+    } else {
+      a <- sigmaIV
+      sigmaIV <- sigmaIV * 2
+      while (Diff(sigmaIV) < 0) {
+        sigmaIV <- sigmaIV * 2
+      }
+      b <- 1.01 * sigmaIV
+    }
+    
+    ### Use uniroot to find the implied volatility
+    IV <- tryCatch(uniroot(Diff, lower = a, upper = b)$root, error = function(e) NA)
+    #IV <- tryCatch(uniroot(Diff, lower = 1e-1113, upper = 1e-13)$root, error = function(e) NA)
+    return(IV)
+  }
+}
+
+
+
+
+####################################################################################################################
+####################################################################################################################
+#---------------------------------- Calculations -------------------------------------------------------------
+####################################################################################################################
+####################################################################################################################
+### Simulation of Master Path
+set.seed(3333333) #set.seed(NULL), 23, 333, 3333333
+int_sm <- 0
+thetam <- theta0
+xim <- xi0
+sm <- s0
+rm <- r0
+J_P <- 0
+J_D <- 0
+N_D <- 0
+IV_BS_Bach_Normal <- IV_BS_Normal <- numeric(nsteps)
+S0_Normal <- numeric(nsteps)
+
+for (i in 1:(nsteps - 10)) {  ### Avoid issues in the last steps
+  print(i)
+  t <- i * dt
+  
+  ### Simulate sm at each fine time step
+  #sm <- sm + kappa_s_jump * (theta_s_jump - sm) * dt + sqrt(dt) * sigma_s_jump * rnorm(1)
+  sm <- sm * exp(-kappa_s_jump * dt) +
+    theta_s_jump * (1 - exp(-kappa_s_jump * dt)) +
+    sigma_s_jump * sqrt((1 - exp(-2 * kappa_s_jump * dt)) / (2 * kappa_s_jump)) * rnorm(1)
+  
+  ### Unscheduled jumps
+  N_P <- rpois(1, lambda = nu_P * dt) #rpois(1, lambda = nu_P * dt) #rpois(1, lambda = nu_P * 1/360)
+  ### Simulate jump sizes Z_1,Z_2,...
+  if (N_P > 0) {
+    Z <- rnorm(N_P, mean = mu_P, sd = sigma_P) #rpois(1, lambda = nu_P) ???
+  } else {
+    Z <- 0
+  }
+  ### Update the jump process
+  J_P <- sum(Z)
+  print(J_P)
+  
+  ### Scheduled jumps
+  dW_xi <- rnorm(1)
+  dW_theta <- rnorm(1)
+  #thetam <- thetam + kappa_theta * (theta_theta - thetam) * dt + sqrt(dt) * sigma_theta * (rho * dW_xi + sqrt(1 - rho^2) * dW_theta)
+  thetam <- thetam * exp(-kappa_theta * dt) +
+    theta_theta * (1 - exp(-kappa_theta * dt)) +
+    sigma_theta * sqrt((1 - exp(-2 * kappa_theta * dt)) / (2 * kappa_theta)) * (rho * dW_xi + sqrt(1 - rho^2) * dW_theta)
+  #xim <- xim + kappa_xi * (thetam - xim) * dt + sqrt(dt) * sigma_xi * dW_xi
+  xim <- xim * exp(-kappa_xi * dt) +
+    thetam * (1 - exp(-kappa_xi * dt)) +
+    sigma_xi * sqrt((1 - exp(-2 * kappa_xi * dt)) / (2 * kappa_xi)) * dW_xi
+  
+  #X_jm <- matrix(data = c(xim, thetam),
+  #              nrow = 2, ncol = n???,
+  #              byrow = TRUE)
+  
+  ### Generate deterministic jump size
+  J_D <- rnorm(1, mean = gamma_Q + xim, sd = omega) #rnorm(1, mean = gamma_Q + t(Gamma_Q) %*% X_j[, i - 1], sd = omega)
+  
+  if (t == jump) { #(time_series[i] %in% jump_dates) #(is_close(t, jump_dates))
+    ### Increment the counting process
+    N_D <- 1
+  } else {
+    N_D <- 0
+  }
+  print(J_D * N_D)
+  
+  ### Update rm and int_sm only at full-day steps
+  if (any(abs(t - Daily) < 1e-6)) {  ### Check if t matches a full day
+    ### Determine rt from SOFR r
+    idx <- max(which(Daily <= t), na.rm = TRUE)  ### Find the last time point before or equal to t
+    if (is.infinite(idx)) idx <- 1  ### Avoid empty selection
+    #rm <- rm + J_P + J_D * N_D ### Update once a day
+    
+    ### Integral of r^s from S to t daily
+    #int_sm <- int_sm + (rm + sm) * 1/360  ### Accumulate integral only at daily steps
+  }
+  rm <- rm + J_P + J_D * N_D ### Updating at every time step
+  
+  ### Integral of r^s from S to t for each t
+  int_sm <- int_sm + (rm + sm) * dt ### Accumulate integral at every time step
+  
+  ### Call Price
+  Call <- price1MSOFROption_Normal(S, t, T, jump, jump_, K_Normal, ZCB_s_NN(t, T, thetat = thetam, xit = xim, rt = rm, sm), thetat = thetam, xit = xim, rt = rm, st = sm, intS_t = int_sm)
+  
+  ### Spots
+  S0_Normal[i] <- 100 * (1 - SOFRSpot_Normal(S, t, T, jump, jump_, thetat = thetam, xit = xim, rt = rm, st = sm, intS_t = int_sm))
+  
+  ### Implicit Volatility
+  IV_BS_Normal[i] <- IVTest(S0_Normal[i], K_Normal, t, T, ZCB_s_NN(t, T, thetam, xim, rm, sm), Call)
+}
+
+### Plotting the results
+plot(S0_Normal[1:(nsteps - 100)], col = "steelblue")
+plot(seq(0, T, length.out = nsteps), IV_BS_Bach_Normal, type = "l", col = "steelblue", 
+     xlab = "t", ylab = "Implied Volatility", main = "Imp Black Vol for t in [0, 1/12]")
+abline(v = (10 - 0)/360, lty = 2)
+plot(seq(0, T, length.out = nsteps), IV_BS_Normal, type = "l", col = "steelblue", 
+     xlab = "t", ylab = "Implied Volatility", main = "Imp Black Vol for t in [0, 1/12]")
+abline(v = (10 - 0)/360, lty = 2)
+plot(seq(0, T, length.out = nsteps), IV_BS_Normal, type = "l", col = "steelblue", 
+     xlab = "t", ylab = "Implied Volatility", main = "Imp Black Vol for t in [0, 1/12]", ylim = c(0, 0.01))
+abline(v = (10 - 0)/360, lty = 2)
+
+
+
+
+
+plot(seq(0, 1/12, length.out = nsteps), IV_BS_MixedExp, type = "l", col = "#901a1E", lwd = 1, ylim = c(0, 0.07),
+     xlab = "t", ylab = "Implied Volatility", main = "Black-76 Implied Volatility for t in [0, 1/12]")
+lines(seq(0, 1/12, length.out = nsteps), IV_BS_Normal, col = "steelblue", lwd = 1)
+lines(seq(0, 1/12, length.out = nsteps), IV_BS_MixedExpSkellam, col = "#666666", lwd = 1)
+lines(seq(0, 1/12, length.out = nsteps), IV_BS_NormalSkellam, col = "#39641c", lwd = 1)
+abline(v = (10 - 0)/360, lty = 2, lwd = 1)
+legend("topright",
+       legend = expression(
+         paste(italic(N), "/", italic(ME)),
+         paste(italic(N), "/", italic(N)),
+         paste(italic(S), "/", italic(ME)),
+         paste(italic(S), "/", scriptstyle("N")),
+         "Jump"
+       ),
+       col = c("#901a1E", "steelblue", "#666666", "#39641c", "black"),
+       title = expression("Dist. of " * J^D * " / " * J^P),
+       lwd = c(1, 1, 1, 1, 1), lty = c(1, 1, 1, 1, 2), cex = 0.7, inset = 0.00)
+legend("topright",
+       legend = c("Normal/Mixed-Exp", "Normal/Normal", "Skellam/Mixed-Exp", "Skellam/Normal", "Scheduled Jump"),
+       col = c("#901a1E", "steelblue", "#666666", "#39641c", "black"), title = "Dist. of J_D / J_P",
+       lwd = c(1, 1, 1, 1, 1), lty = c(1, 1, 1, 1, 2), cex=0.7, inset = 0.00)
+
+
+
+
+### Simulation of Master Path
+set.seed(NULL)
+FutVariance <- numeric(nsteps)
+
+for (i in 1:(nsteps - 10)) {  ### Avoid issues in the last steps
+  print(i)
+  t <- i * dt
+  
+  ### Closed-form variance of the 1M SOFR futures price
+  FutVariance[i] <- VarFutPrice(S, t, T, jump, jump_)
+}
+
+plot(seq(0, T, length.out = nsteps), FutVariance, type = "l", col = "steelblue", lwd = 3,
+     xlab = "t", ylab = "Var_t^Q(F(T;S,T)", main = "Variance of 1M SOFR Futures Price for t in [0, 1/12]")
+abline(v = (10 - 0)/360, lty = 2, col = "grey83")
+
