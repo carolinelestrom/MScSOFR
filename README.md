@@ -11,7 +11,7 @@ The file MixedExpApproximatesNormal.R contains code for the approximation of the
 
 The file SkellamPMF.R contains code for Figure 3.
 
-The file JumpModelPDF.R contains code for the the Monte-Carlo based probability density function of each of the four model specifications plotted in Figure 4.
+The file JumpModelPDFMC.R contains code for the the Monte-Carlo based probability density function of each of the four model specifications plotted in Figure 4.
 
 The file Simulating1M.R contains code for the simulations plotted in Figure 5.
 
